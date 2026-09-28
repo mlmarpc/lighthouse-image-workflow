@@ -132,8 +132,8 @@ function VariantPanel({ image, viewport, settings, selected, onSettings, onSelec
     </div>
     <div className="size-readout">
       <div className="size-stat original-stat"><span>Original</span><b>{byteLabel(image.file.size)}</b></div>
-      <div className="size-stat preview-stat"><span>Preview</span><b>{previewSize === null ? '—' : byteLabel(previewSize)}</b></div>
-      {previewSize !== null && <span className={`size-change ${previewSize < image.file.size ? 'smaller' : ''}`}>{previewSize < image.file.size ? `${Math.round((1 - previewSize / image.file.size) * 100)}% smaller` : previewSize > image.file.size ? `${Math.round((previewSize / image.file.size - 1) * 100)}% larger` : 'Same size'}</span>}
+      <div className={`size-stat preview-stat ${previewSize !== null && previewSize < image.file.size ? 'smaller' : previewSize !== null ? 'larger' : ''}`}><span>Preview</span><b>{previewSize === null ? '—' : byteLabel(previewSize)}</b></div>
+      <div className="size-stat savings-stat"><span>Estimated savings</span><b>{previewSize === null ? '—' : byteLabel(Math.abs(image.file.size - previewSize))}</b><small>{previewSize === null ? 'Waiting for preview' : previewSize < image.file.size ? `${Math.round((1 - previewSize / image.file.size) * 100)}% smaller` : previewSize > image.file.size ? `${Math.round((previewSize / image.file.size - 1) * 100)}% larger` : 'Same size'}</small></div>
     </div>
   </section>;
 }
@@ -404,17 +404,17 @@ function App() {
   >
     {draggingFiles && <div className="page-drop-overlay" role="status" aria-live="polite"><div><span className="drop-icon">＋</span><b>Drop images to add them</b><small>Image files only · originals stay on your device</small></div></div>}
     <header className="topbar">
+      <div className="toolbar-pickers">
+        <button className="picker-button" onClick={() => void pickDirectory()}><span className="picker-icon">▧</span><span><b>Select a folder</b><small>Includes nested folders</small></span></button>
+        <button className="picker-button" onClick={() => void pickFiles()}><span className="picker-icon">＋</span><span><b>Add image files</b><small>Select one or more images</small></span></button>
+        {images.length > 0 && <button className="clear-button" onClick={() => void clearAll()}>Clear all</button>}
+        <input ref={directoryInput} hidden type="file" multiple accept="image/*" onChange={(event) => { void addFiles(event.target.files, true); event.target.value = ''; }} />
+        <input ref={filesInput} hidden type="file" multiple accept="image/*" onChange={(event) => { void addFiles(event.target.files, false); event.target.value = ''; }} />
+      </div>
+      <div className="export-tools toolbar-download"><label>Download as<select value={exportMode} onChange={(event) => setExportMode(event.target.value as 'zip' | 'individual')}><option value="zip">ZIP archive</option><option value="individual">Individual files</option></select></label></div>
       <div className="header-tools"><span className="image-count">{images.length} images · {selectedCount} selected</span><button className="primary" disabled={!selectedCount || exporting} onClick={exportSelected}>{exporting ? 'Preparing…' : 'Export selected'}</button></div>
     </header>
     <section className="intro"><div><p className="eyebrow">Image optimization</p><h1>Choose images to optimize</h1><p>Select a folder, add individual files, or drop images anywhere on this page. Your originals stay on your device.</p></div></section>
-    <section className="picker-bar">
-      <button className="picker-button" onClick={() => void pickDirectory()}><span className="picker-icon">▧</span><span><b>Select a folder</b><small>Includes nested folders</small></span></button>
-      <button className="picker-button" onClick={() => void pickFiles()}><span className="picker-icon">＋</span><span><b>Add image files</b><small>Select one or more images</small></span></button>
-      {images.length > 0 && <button className="clear-button" onClick={() => void clearAll()}>Clear all</button>}
-      <input ref={directoryInput} hidden type="file" multiple accept="image/*" onChange={(event) => { void addFiles(event.target.files, true); event.target.value = ''; }} />
-      <input ref={filesInput} hidden type="file" multiple accept="image/*" onChange={(event) => { void addFiles(event.target.files, false); event.target.value = ''; }} />
-      <div className="export-tools"><label>Download as<select value={exportMode} onChange={(event) => setExportMode(event.target.value as 'zip' | 'individual')}><option value="zip">ZIP archive</option><option value="individual">Individual files</option></select></label><span>PNG · JPEG · WebP</span></div>
-    </section>
     {!supportsPersistentPickers() && <p className="persistence-note">This browser can’t restore selected files after refresh. Reselect them to continue.</p>}
     {restorePending && <div className="restore-session"><span>Previous images are saved. Allow file access to restore them.</span><button onClick={() => void restoreFiles()} disabled={scanning}>Restore previous session</button></div>}
     {(notice || error) && <div className={`notice ${error ? 'error' : 'success'}`}>{error || notice}<button onClick={() => { setError(''); setNotice(''); }}>Dismiss</button></div>}
