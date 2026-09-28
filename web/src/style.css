@@ -12,7 +12,7 @@
 
 .variant-actions{display:flex;align-items:center;gap:0.5rem}.single-download{border:0.0625rem solid #dddddd;border-radius:5px;background:#f4f4f4;color:#111111;padding:0.25rem 0.4375rem;font-size:.75rem;font-weight:700;white-space:nowrap}.single-download:hover{background:#e8e8e8}.single-download:disabled{opacity:.6;cursor:wait}
 
-.preview{position:relative}.compare-toggle{position:absolute;top:0.4375rem;right:0.4375rem;border:0.0625rem solid #d7e0d9;border-radius:5px;background:#ffffffed;color:#33483b;padding:0.3125rem 0.5rem;font-size:.75rem;font-weight:700;box-shadow:0 0.0625rem 0.1875rem #16251c18}.compare-toggle:hover:not(:disabled){background:#fff;border-color:#999999}.compare-toggle:disabled{opacity:.55;cursor:default}
+.preview{position:relative}.preview-actions{position:absolute;top:0.4375rem;right:0.4375rem;display:flex;gap:0.3125rem}.preview-actions button{border:0.0625rem solid #d7e0d9;border-radius:5px;background:#ffffffed;color:#33483b;padding:0.3125rem 0.5rem;font-size:.75rem;font-weight:700;box-shadow:0 0.0625rem 0.1875rem #16251c18;white-space:nowrap}.preview-actions button:hover:not(:disabled){background:#fff;border-color:#999999}.preview-actions button:disabled{opacity:.55;cursor:default}
 
 /* Keep image pixels true to size when they fit, then constrain oversized previews to the viewport. */
 .preview,.source-thumb{height:auto!important;min-height:6.5rem;width:100%;aspect-ratio:auto!important;overflow:hidden}

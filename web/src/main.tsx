@@ -120,7 +120,10 @@ function VariantPanel({ image, viewport, settings, selected, onSettings, onSelec
     </div>
     <div className="preview checker" style={{ aspectRatio: `${image.width} / ${image.height}` }}>
       {showingOriginal ? <img src={image.originalUrl} alt="Original image comparison" /> : previewUrl ? <img src={previewUrl} alt={`${viewport} compressed preview`} /> : <span>{loading ? 'Rendering preview…' : error || 'Preview'}</span>}
-      <button className="compare-toggle" disabled={!previewUrl} onClick={() => setShowingOriginal((value) => !value)}>{showingOriginal ? 'Show compressed' : 'Show original'}</button>
+      <div className="preview-actions">
+        <button className="compare-toggle" disabled={!previewUrl} onClick={() => setShowingOriginal((value) => !value)}>{showingOriginal ? 'Show compressed' : 'Show original'}</button>
+        <button className="open-preview" disabled={!previewUrl} title="Open compressed preview in a new tab" aria-label={`Open ${viewport} preview in a new tab`} onClick={() => window.open(previewUrl, '_blank', 'noopener,noreferrer')}>Open preview ↗</button>
+      </div>
     </div>
     <div className="control-grid">
       <label>Format<select value={settings.format} onChange={(event) => onSettings({ ...settings, format: event.target.value as Format })}>
