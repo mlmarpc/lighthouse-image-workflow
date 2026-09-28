@@ -1,0 +1,2 @@
+export type SelectedImage = { id: string; file: File; relativePath: string; fingerprint: string; directory: boolean };
+export function mergeSelectedFiles(current: SelectedImage[], files: File[], options?: { directory?: boolean; makeId?: (file: File, relativePath: string) => string; getRelativePath?: (file: File) => string }): { images: SelectedImage[]; added: SelectedImage[]; updated: SelectedImage[] };

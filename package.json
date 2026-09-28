@@ -4,18 +4,32 @@
   "private": true,
   "type": "module",
   "bin": {
-    "lh-image-workflow": "bin/lh-image-workflow.mjs"
+    "lh-image-workflow": "cli/bin/lh-image-workflow.mjs"
   },
   "scripts": {
-    "test": "node --test"
+    "start": "npm run build:web && node web/server.mjs",
+    "build": "npm run build:web",
+    "build:web": "vite build --config web/vite.config.ts",
+    "test": "node --test cli/test/*.test.mjs web/test/*.test.mjs",
+    "cli": "node cli/bin/lh-image-workflow.mjs"
   },
   "dependencies": {
     "diff": "^7.0.0",
     "glob": "^11.0.2",
+    "jszip": "^3.10.2",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0",
     "sharp": "0.34.2",
     "sharp-cli": "5.2.0"
   },
   "engines": {
     "node": ">=20.9"
+  },
+  "devDependencies": {
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^4.7.0",
+    "typescript": "^7.0.2",
+    "vite": "^6.4.3"
   }
 }

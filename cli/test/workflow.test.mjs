@@ -4,7 +4,7 @@ import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import sharp from 'sharp';
-import { analyzeReports, applyManifest, optimizeManifest, parseLighthouseReport, planReferenceUpdates } from '../src/workflow.mjs';
+import { analyzeReports, applyManifest, optimizeManifest, parseLighthouseReport, planReferenceUpdates } from '../workflow.mjs';
 
 async function tempDir() { return mkdtemp(path.join(os.tmpdir(), 'lh-image-workflow-')); }
 
@@ -56,7 +56,7 @@ test('optimizes PNG losslessly at source/configured dimensions and reports outpu
   const manifest = {
     outputFormat: 'png', jpegQuality: 90, entries: [{ source: 'assets/hero.png', variants: {
       desktop: { dimensions: { width: 12, height: 8 }, targetBytes: 1 },
-      mobile: { dimensions: { width: 6, height: 4 }, targetBytes: 100000 },
+      mobile: { dimensions: { width: 6, height: 6 }, targetBytes: 100000 },
     } }],
   };
   const results = await optimizeManifest({ manifest, projectRoot: root });
@@ -66,9 +66,55 @@ test('optimizes PNG losslessly at source/configured dimensions and reports outpu
   assert.ok(results[0].bytes > 0);
   assert.equal(results[0].overTargetBytes, results[0].bytes - 1);
   assert.equal(results[1].dimensions.width, 6);
+  assert.equal(results[1].dimensions.height, 4);
   const expected = await sharp(source).raw().toBuffer();
   const actual = await sharp(path.join(root, results[0].output)).raw().toBuffer();
   assert.deepEqual(actual, expected);
+});
+
+test('combines report pairs, resolves viewport variants to originals, and fits without cropping', async (t) => {
+  const root = await tempDir(); t.after(() => rm(root, { recursive: true, force: true }));
+  const folder = path.join(root, 'assets/features');
+  await mkdir(folder, { recursive: true });
+  for (const [name, width, height] of [
+    ['hero.png', 12, 8], ['hero-desktop.png', 6, 6], ['hero-mobile.png', 4, 6],
+    ['other.png', 20, 10], ['other-desktop.png', 10, 5], ['other-mobile.png', 5, 5],
+    ['portrait.png', 8, 12], ['portrait-desktop.png', 6, 6], ['portrait-mobile.png', 6, 4],
+  ]) {
+    await sharp({ create: { width, height, channels: 4, background: '#386fa5' } }).png().toFile(path.join(folder, name));
+  }
+  const config = {
+    urlMappings: [{ urlPrefix: 'https://site.test/assets/', localRoot: 'assets' }],
+    sourceGlobs: ['src/**/*.html'],
+  };
+  const report = (name, viewport) => ({ audits: { images: { details: { items: [
+    { url: `https://site.test/assets/features/${name}-${viewport}.png`, totalBytes: 9000, wastedBytes: 1000 },
+  ] } } } });
+  const manifest = await analyzeReports({
+    projectRoot: root,
+    config,
+    reportPairs: [
+      { desktopReport: report('hero', 'desktop'), mobileReport: report('hero', 'mobile') },
+      { desktopReport: report('other', 'desktop'), mobileReport: report('other', 'mobile') },
+      { desktopReport: report('portrait', 'desktop'), mobileReport: report('portrait', 'mobile') },
+    ],
+  });
+  assert.equal(manifest.entries.length, 3);
+  const hero = manifest.entries.find((entry) => entry.source.endsWith('hero.png'));
+  assert.ok(hero);
+  assert.deepEqual(hero.variants.desktop.dimensions, { width: 6, height: 6 });
+  assert.deepEqual(hero.variants.mobile.dimensions, { width: 4, height: 6 });
+  const outputs = await optimizeManifest({ manifest, projectRoot: root });
+  const heroDesktop = outputs.find((entry) => entry.source.endsWith('hero.png') && entry.viewport === 'desktop');
+  const heroMobile = outputs.find((entry) => entry.source.endsWith('hero.png') && entry.viewport === 'mobile');
+  assert.deepEqual(heroDesktop.dimensions, { width: 6, height: 4 });
+  assert.deepEqual(heroMobile.dimensions, { width: 4, height: 3 });
+  assert.equal(heroDesktop.output, 'assets/features/hero-desktop.png');
+  assert.equal(heroMobile.output, 'assets/features/hero-mobile.png');
+  const portraitDesktop = outputs.find((entry) => entry.source.endsWith('portrait.png') && entry.viewport === 'desktop');
+  const portraitMobile = outputs.find((entry) => entry.source.endsWith('portrait.png') && entry.viewport === 'mobile');
+  assert.deepEqual(portraitDesktop.dimensions, { width: 4, height: 6 });
+  assert.deepEqual(portraitMobile.dimensions, { width: 3, height: 4 });
 });
 
 

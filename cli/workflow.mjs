@@ -1,13 +1,11 @@
-import { mkdir, readFile, stat, writeFile } from 'node:fs/promises';
+import { readFile, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
-import { execFileSync } from 'node:child_process';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import sharp from 'sharp';
 import { globSync } from 'glob';
 import { createTwoFilesPatch } from 'diff';
+import { encodeImage, validateEncodingSettings, variantPath } from '../shared/image-processing.mjs';
 
-const TOOL_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg']);
 const SAVINGS_KEYS = [
   'wastedBytes',
@@ -136,51 +134,59 @@ function isInside(root, candidate) {
   return relative === '' || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative));
 }
 
-export async function analyzeReports({ projectRoot, config, desktopReport, mobileReport, outputFormat = 'png' }) {
-  if (!['png', 'jpeg'].includes(outputFormat)) throw new Error(`Unsupported output format: ${outputFormat}`);
-  const reports = {
-    desktop: parseLighthouseReport(desktopReport, 'desktop'),
-    mobile: parseLighthouseReport(mobileReport, 'mobile'),
-  };
+export async function analyzeReports({ projectRoot, config, desktopReport, mobileReport, reportPairs, outputFormat = 'png' }) {
+  if (!['png', 'jpeg', 'webp'].includes(outputFormat)) throw new Error(`Unsupported output format: ${outputFormat}`);
+  const pairs = reportPairs?.length ? reportPairs : [{ desktopReport, mobileReport }];
   const bySource = new Map();
   const unresolved = [];
-  for (const viewport of ['desktop', 'mobile']) {
-    for (const item of reports[viewport]) {
-      const resolved = resolveLocalUrl(item.url, projectRoot, config.urlMappings);
-      if (resolved.status !== 'mapped') {
-        unresolved.push({ ...item, mappingStatus: resolved.status, reason: resolved.reason, localPath: resolved.localPath ?? null });
-        continue;
-      }
-      const source = path.relative(projectRoot, resolved.localPath).split(path.sep).join('/');
-      let entry = bySource.get(source);
-      if (!entry) {
-        const metadata = await sharp(resolved.localPath).metadata();
-        const override = config.dimensions?.[source] ?? {};
-        entry = {
-          source,
-          sourceUrl: item.url,
-          sourceDimensions: { width: metadata.width, height: metadata.height },
-          mappingStatus: 'mapped',
-          variants: {},
-        };
-        for (const side of ['desktop', 'mobile']) {
-          const dimensions = override[side] ?? entry.sourceDimensions;
-          entry.variants[side] = {
-            output: variantPath(source, side, outputFormat),
-            dimensions: { width: dimensions.width, height: dimensions.height },
-            targetBytes: null,
-            estimatedSavingsBytes: null,
-            reportedBytes: null,
-            audits: [],
-          };
+  for (const pair of pairs) {
+    for (const viewport of ['desktop', 'mobile']) {
+      const report = viewport === 'desktop' ? pair.desktopReport : pair.mobileReport;
+      for (const item of parseLighthouseReport(report, viewport)) {
+        const resolved = resolveLocalUrl(item.url, projectRoot, config.urlMappings);
+        if (resolved.status !== 'mapped') {
+          unresolved.push({ ...item, mappingStatus: resolved.status, reason: resolved.reason, localPath: resolved.localPath ?? null });
+          continue;
         }
-        bySource.set(source, entry);
+        const reportedMetadata = await sharp(resolved.localPath).metadata();
+        const canonicalPath = canonicalSourcePath(resolved.localPath);
+        const source = path.relative(projectRoot, canonicalPath).split(path.sep).join('/');
+        let entry = bySource.get(source);
+        if (!entry) {
+          const metadata = await sharp(canonicalPath).metadata();
+          const override = config.dimensions?.[source] ?? {};
+          entry = {
+            source,
+            sourceUrl: item.url,
+            sourceDimensions: { width: metadata.width, height: metadata.height },
+            mappingStatus: 'mapped',
+            variants: {},
+          };
+          for (const side of ['desktop', 'mobile']) {
+            const dimensions = override[side] ?? entry.sourceDimensions;
+            entry.variants[side] = {
+              output: variantPath(source, side, outputFormat),
+              format: outputFormat,
+              quality: config[`${outputFormat}Quality`] ?? config.jpegQuality ?? 90,
+              dimensions: { width: dimensions.width, height: dimensions.height },
+              targetBytes: null,
+              estimatedSavingsBytes: null,
+              reportedBytes: null,
+              audits: [],
+            };
+          }
+          bySource.set(source, entry);
+        }
+        const variant = entry.variants[viewport];
+        if (!config.dimensions?.[source]?.[viewport]) {
+          variant.dimensions.width = Math.min(variant.dimensions.width, reportedMetadata.width);
+          variant.dimensions.height = Math.min(variant.dimensions.height, reportedMetadata.height);
+        }
+        variant.targetBytes = minNullable(variant.targetBytes, item.targetBytes);
+        variant.estimatedSavingsBytes = maxNullable(variant.estimatedSavingsBytes, item.estimatedSavingsBytes);
+        variant.reportedBytes = maxNullable(variant.reportedBytes, item.reportedBytes);
+        variant.audits.push({ id: item.auditId, url: item.url });
       }
-      const variant = entry.variants[viewport];
-      variant.targetBytes = minNullable(variant.targetBytes, item.targetBytes);
-      variant.estimatedSavingsBytes = maxNullable(variant.estimatedSavingsBytes, item.estimatedSavingsBytes);
-      variant.reportedBytes = maxNullable(variant.reportedBytes, item.reportedBytes);
-      variant.audits.push({ id: item.auditId, url: item.url });
     }
   }
 
@@ -196,18 +202,19 @@ export async function analyzeReports({ projectRoot, config, desktopReport, mobil
   };
 }
 
-function variantPath(source, viewport, format) {
-  const parsed = path.posix.parse(source);
-  const extension = format === 'jpeg' ? '.jpg' : '.png';
-  return path.posix.join(parsed.dir, `${parsed.name}-${viewport}${extension}`);
+function canonicalSourcePath(reportedPath) {
+  const parsed = path.parse(reportedPath);
+  const match = parsed.name.match(/-(desktop|mobile)$/i);
+  if (!match) return reportedPath;
+  const sourcePath = path.join(parsed.dir, `${parsed.name.slice(0, -match[0].length)}${parsed.ext}`);
+  return existsSync(sourcePath) ? sourcePath : reportedPath;
 }
 
 export async function optimizeManifest({ manifest, projectRoot, outputFormat, jpegQuality }) {
   const format = outputFormat ?? manifest.outputFormat ?? 'png';
-  if (!['png', 'jpeg'].includes(format)) throw new Error(`Unsupported output format: ${format}`);
+  if (!['png', 'jpeg', 'webp'].includes(format)) throw new Error(`Unsupported output format: ${format}`);
   const quality = jpegQuality ?? manifest.jpegQuality ?? 90;
   if (!Number.isInteger(quality) || quality < 1 || quality > 100) throw new Error('JPEG quality must be an integer from 1 to 100');
-  const sharpBin = path.join(TOOL_ROOT, 'node_modules', '.bin', process.platform === 'win32' ? 'sharp.cmd' : 'sharp');
   const results = [];
 
   for (const entry of manifest.entries) {
@@ -215,12 +222,16 @@ export async function optimizeManifest({ manifest, projectRoot, outputFormat, jp
     if (!isInside(projectRoot, source) || !existsSync(source)) throw new Error(`Missing or unsafe source image: ${entry.source}`);
     const originalName = path.basename(source, path.extname(source));
     for (const viewport of ['desktop', 'mobile']) {
-      const dimensions = entry.variants[viewport].dimensions;
-      const extension = format === 'jpeg' ? '.jpg' : '.png';
+      const variant = entry.variants[viewport];
+      const variantFormat = outputFormat ?? variant.format ?? format;
+      const quality = jpegQuality ?? variant.quality ?? manifest.jpegQuality ?? 90;
+      validateEncodingSettings(variantFormat, quality, variant.dimensions);
+      const dimensions = variant.dimensions;
+      const extension = variantFormat === 'jpeg' ? '.jpg' : variantFormat === 'webp' ? '.webp' : '.png';
       const outputRelative = path.posix.join(path.posix.dirname(entry.source), `${originalName}-${viewport}${extension}`);
       const output = path.resolve(projectRoot, outputRelative);
-      const outMeta = await encodeImage({ sharpBin, source, output, dimensions, format, quality });
-      const targetBytes = entry.variants[viewport].targetBytes;
+      const outMeta = await encodeImage({ source, output, dimensions, format: variantFormat, quality });
+      const targetBytes = variant.targetBytes;
       results.push({
         source: entry.source,
         viewport,
@@ -230,34 +241,17 @@ export async function optimizeManifest({ manifest, projectRoot, outputFormat, jp
         targetBytes,
         overTargetBytes: targetBytes === null ? null : Math.max(0, outMeta.size - targetBytes),
       });
-      entry.variants[viewport].output = outputRelative;
-      entry.variants[viewport].actualBytes = outMeta.size;
-      entry.variants[viewport].actualDimensions = { width: outMeta.width, height: outMeta.height };
-      entry.variants[viewport].overTargetBytes = targetBytes === null ? null : Math.max(0, outMeta.size - targetBytes);
+      variant.output = outputRelative;
+      variant.format = variantFormat;
+      variant.quality = quality;
+      variant.actualBytes = outMeta.size;
+      variant.actualDimensions = { width: outMeta.width, height: outMeta.height };
+      variant.overTargetBytes = targetBytes === null ? null : Math.max(0, outMeta.size - targetBytes);
     }
   }
   manifest.outputFormat = format;
   manifest.jpegQuality = quality;
   return results;
-}
-
-async function encodeImage({ sharpBin, source, output, dimensions, format, quality }) {
-  await mkdir(path.dirname(output), { recursive: true });
-  const inputMeta = await sharp(source).metadata();
-  const args = ['-i', source, '-o', output];
-  if (inputMeta.width !== dimensions.width || inputMeta.height !== dimensions.height) {
-    const inputRatio = inputMeta.width / inputMeta.height;
-    const targetRatio = dimensions.width / dimensions.height;
-    if (Math.abs(inputRatio - targetRatio) > 0.01) throw new Error(`Refusing aspect-ratio change for ${source}`);
-    args.push('resize', String(dimensions.width), String(dimensions.height));
-  }
-  args.push('-f', format === 'jpeg' ? 'jpeg' : 'png', '-m');
-  if (format === 'png') args.push('-c', '9');
-  else args.push('-q', String(quality));
-  execFileSync(sharpBin, args, { stdio: 'inherit' });
-  const metadata = await sharp(output).metadata();
-  const outputStat = await stat(output);
-  return { ...metadata, size: outputStat.size };
 }
 
 export function planReferenceUpdates(contentsByFile, manifest) {
