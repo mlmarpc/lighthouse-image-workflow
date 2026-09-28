@@ -1,0 +1,21 @@
+{
+  "name": "lighthouse-image-workflow",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "lh-image-workflow": "bin/lh-image-workflow.mjs"
+  },
+  "scripts": {
+    "test": "node --test"
+  },
+  "dependencies": {
+    "diff": "^7.0.0",
+    "glob": "^11.0.2",
+    "sharp": "0.34.2",
+    "sharp-cli": "5.2.0"
+  },
+  "engines": {
+    "node": ">=20.9"
+  }
+}

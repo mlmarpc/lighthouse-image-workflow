@@ -1,0 +1,19 @@
+{
+  "urlMappings": [
+    {
+      "urlPrefix": "https://www.example.com/assets/images/",
+      "localRoot": "public/assets/images"
+    }
+  ],
+  "sourceGlobs": [
+    "src/**/*.{html,php,js,ts,jsx,tsx,css,less}"
+  ],
+  "outputFormat": "png",
+  "jpegQuality": 90,
+  "dimensions": {
+    "public/assets/images/example.png": {
+      "desktop": { "width": 1200, "height": 800 },
+      "mobile": { "width": 420, "height": 280 }
+    }
+  }
+}
