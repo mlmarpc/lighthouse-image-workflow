@@ -31,6 +31,8 @@ jobs:
 
       - name: Build web app
         run: npm run build:web
+        env:
+          GITHUB_PAGES: 'true'
 
       - name: Publish build to build/web branch
         uses: peaceiris/actions-gh-pages@v4

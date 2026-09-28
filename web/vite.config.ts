@@ -4,4 +4,10 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = path.dirname(fileURLToPath(import.meta.url));
-export default defineConfig({ root, plugins: [react()], build: { outDir: 'dist', emptyOutDir: true }, server: { host: '127.0.0.1' } });
+export default defineConfig({
+  root,
+  base: process.env.GITHUB_PAGES === 'true' ? '/lighthouse-image-workflow/' : '/',
+  plugins: [react()],
+  build: { outDir: 'dist', emptyOutDir: true },
+  server: { host: '127.0.0.1' },
+});
