@@ -25,8 +25,8 @@
 .image-name b{font-size:1rem;line-height:1.25;color:#263b31}
 .image-name small{font-size:.8125rem;color:#849088;margin-top:0.1875rem}
 .image-row-content{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:1rem;align-items:stretch}
-.source-cell{display:flex;flex-direction:column;align-items:stretch;gap:0.5rem;min-width:0;position:relative}
-.source-meta{min-width:0;padding-right:0}
+.source-cell{display:flex;flex-direction:column;align-items:stretch;gap:0;min-width:0;position:relative}
+.source-meta{min-width:0;padding-right:0;margin-top:0.5rem}
 .source-meta small{font-size:.8125rem}
 .remove-button{position:static;border:0.0625rem solid #e0e6e1;background:#fff;color:#708078;font-size:.8125rem;padding:0.25rem 0.5625rem;height:auto}
 .remove-button:hover{background:#f9efed;color:#a64b39}
@@ -77,4 +77,3 @@
 @media(max-width:62.5rem){.topbar{height:auto;flex-wrap:wrap;justify-content:flex-start}.toolbar-pickers{flex-wrap:wrap}.toolbar-download{margin-left:0}.header-tools{margin-left:auto}}
 @media(max-width:43.75rem){.topbar{height:auto;min-height:0;gap:0.5rem;padding:0.5rem 0}.toolbar-pickers{display:grid;width:100%;grid-template-columns:repeat(2,minmax(0,1fr));gap:0.5rem}.toolbar-pickers .picker-button{min-width:0;padding:0.375rem 0.5rem}.toolbar-pickers .picker-button small{display:none}.toolbar-download{margin:0}.header-tools{width:100%;justify-content:space-between;gap:0.375rem;margin-left:0}.toolbar-sort span{display:none}.toolbar-sort{gap:0.25rem}.toolbar-sort button{padding:0.25rem 0.375rem;font-size:.75rem}.clear-button{padding:0.375rem 0.5rem}}
 .palette-settings{grid-column:1/-1;display:grid;grid-template-columns:1fr 1fr;gap:.375rem .5625rem;align-items:center}.palette-toggle,.palette-count{display:flex;align-items:center;gap:.3125rem;font-size:.75rem;font-weight:700;color:#748078}.palette-count b{margin-left:auto;color:#34433c}.palette-count input{width:100%;accent-color:#111}.palette-hint{grid-column:1/-1;color:#849087;font-size:.6875rem}
-.preview-loading{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;gap:.5rem;background:#ffffffb8;color:#263b31;font-size:.8125rem;font-weight:700;backdrop-filter:blur(1px)}.preview-spinner{width:1rem;height:1rem;border:.125rem solid #b8c4bc;border-top-color:#111;border-radius:50%;animation:preview-spin .7s linear infinite}@keyframes preview-spin{to{transform:rotate(360deg)}}
