@@ -18,18 +18,75 @@ export function variantPath(source, viewport, format) {
   return path.posix.join(parsed.dir, `${parsed.name}-${viewport}${extension}`);
 }
 
-export async function encodeBuffer({ input, dimensions, format, quality, palette = false, colors = 64 }) {
+export async function encodeBuffer({ input, dimensions, format, quality, targetSsim, autoQuality = true, measureSsimResult = false, palette = false, colors = 64 }) {
+  if (targetSsim !== undefined && (!Number.isFinite(targetSsim) || targetSsim < 0.8 || targetSsim > 1)) throw new Error('Target SSIM must be from 0.80 to 1.00');
   validateEncodingSettings(format, quality, dimensions, palette, colors);
-  const resized = sharp(input).resize({ width: dimensions.width, height: dimensions.height, fit: 'inside', withoutEnlargement: true });
+  const resizeOptions = { width: dimensions.width, height: dimensions.height, fit: 'inside', withoutEnlargement: true };
+  const resized = sharp(input).resize(resizeOptions);
   if (format === 'png' && palette) {
     const { data, info } = await resized.ensureAlpha().raw().toBuffer({ resolveWithObject: true });
     const reduced = quantizeRgba(data, info.width, info.height, colors);
     const output = await sharp(reduced, { raw: { width: info.width, height: info.height, channels: 4 } })
       .png({ compressionLevel: 9, palette: true, colors: 256, quality: 100, dither: 1 })
       .toBuffer({ resolveWithObject: true });
-    return output;
+    if (!measureSsimResult && targetSsim === undefined) return output;
+    const ssim = await measureSsim(input, output.data);
+    return { data: output.data, info: { ...output.info, ssim, ...(targetSsim === undefined ? {} : { targetMet: ssim >= targetSsim }) } };
   }
-  return encodeFormat(resized, format, quality).toBuffer({ resolveWithObject: true });
+  if ((targetSsim === undefined || !autoQuality) && format !== 'png') {
+    const { data, info } = await encodeFormat(resized, format, quality).toBuffer({ resolveWithObject: true });
+    if (targetSsim === undefined && !measureSsimResult) return { data, info };
+    const ssim = await measureSsim(input, data);
+    return { data, info: { ...info, ssim, quality, ...(targetSsim === undefined ? {} : { targetMet: ssim >= targetSsim }) } };
+  }
+  if (format === 'png' || targetSsim === undefined) {
+    const { data, info } = await encodeFormat(resized, format, quality).toBuffer({ resolveWithObject: true });
+    if (!measureSsimResult && targetSsim === undefined) return { data, info };
+    const ssim = await measureSsim(input, data);
+    return { data, info: { ...info, ssim, ...(targetSsim === undefined ? {} : { quality, targetMet: ssim >= targetSsim }) } };
+  }
+
+  let low = 1; let high = 100; let best = null; let bestSsim = 0; let bestQuality = 100;
+  while (low <= high) {
+    const candidate = Math.floor((low + high) / 2);
+    const { data, info } = await encodeFormat(sharp(input).resize(resizeOptions), format, candidate).toBuffer({ resolveWithObject: true });
+    const ssim = await measureSsim(input, data);
+    if (ssim >= targetSsim) { best = { data, info }; bestSsim = ssim; bestQuality = candidate; high = candidate - 1; }
+    else low = candidate + 1;
+  }
+  if (!best) {
+    const { data, info } = await encodeFormat(sharp(input).resize(resizeOptions), format, 100).toBuffer({ resolveWithObject: true });
+    best = { data, info }; bestSsim = await measureSsim(input, data);
+  }
+  return { data: best.data, info: { ...best.info, ssim: bestSsim, quality: bestQuality, targetMet: bestSsim >= targetSsim } };
+}
+
+async function measureSsim(referenceInput, output) {
+  const rendered = await sharp(output).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+  const reference = await sharp(referenceInput).resize({ width: rendered.info.width, height: rendered.info.height, fit: 'fill' }).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+  const width = rendered.info.width;
+  const height = rendered.info.height;
+  const a = reference.data; const b = rendered.data;
+  const channels = Math.min(reference.info.channels, rendered.info.channels, 3);
+  let total = 0; let count = 0;
+  const c1 = (0.01 * 255) ** 2; const c2 = (0.03 * 255) ** 2;
+  for (let y = 0; y < height; y += 8) for (let x = 0; x < width; x += 8) {
+    const endY = Math.min(y + 8, height); const endX = Math.min(x + 8, width); const n = (endY - y) * (endX - x);
+    for (let channel = 0; channel < channels; channel++) {
+      let meanA = 0; let meanB = 0; let squareA = 0; let squareB = 0; let product = 0;
+      for (let py = y; py < endY; py++) for (let px = x; px < endX; px++) {
+        const av = a[(py * reference.info.width + px) * reference.info.channels + channel];
+        const bv = b[(py * rendered.info.width + px) * rendered.info.channels + channel];
+        meanA += av; meanB += bv; squareA += av * av; squareB += bv * bv; product += av * bv;
+      }
+      meanA /= n; meanB /= n;
+      const varianceA = squareA / n - meanA * meanA; const varianceB = squareB / n - meanB * meanB;
+      const covariance = product / n - meanA * meanB;
+      total += ((2 * meanA * meanB + c1) * (2 * covariance + c2)) / ((meanA * meanA + meanB * meanB + c1) * (varianceA + varianceB + c2));
+      count++;
+    }
+  }
+  return total / count;
 }
 
 export async function renderImage({ source, dimensions, format, quality }) {

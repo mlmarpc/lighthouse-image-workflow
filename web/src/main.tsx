@@ -1,22 +1,26 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { buildZip } from './export-utils.mjs';
 import { mergeSelectedFiles, type SelectedImage } from './selection.mjs';
+import { readNumericHeader, targetFromMeasuredSsim } from './ssim-utils.mjs';
 import { clearSession, loadSession, saveSources, saveUiState, type AccessDirectoryHandle, type AccessHandle, type SourceHandle } from './session-store';
 import './style.css';
 
 type Viewport = 'desktop' | 'mobile';
 type Format = 'png' | 'jpeg' | 'webp';
-type Settings = { format: Format; quality: number; width: number; height: number; palette: boolean; colors: number };
+type SortKey = 'name' | 'size';
+type SortDirection = 'asc' | 'desc';
+type Settings = { format: Format; quality: number; autoQuality: boolean; width: number; height: number; palette: boolean; colors: number };
 type ImageDetails = SelectedImage & { width: number; height: number; originalUrl: string };
 type ExportItem = { path: string; data: Uint8Array };
 
-const INITIAL_FORMAT: Format = 'png';
+const INITIAL_FORMAT: Format = 'jpeg';
+const INITIAL_SSIM = 0.95;
 const OUTPUT_EXTENSION: Record<Format, string> = { png: '.png', jpeg: '.jpg', webp: '.webp' };
 const IMAGE_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'webp', 'avif', 'gif', 'tif', 'tiff', 'heic', 'heif']);
 const defaults = (width: number, height: number): Record<Viewport, Settings> => ({
-  desktop: { format: INITIAL_FORMAT, quality: 82, width, height, palette: false, colors: 64 },
-  mobile: { format: INITIAL_FORMAT, quality: 82, width, height, palette: false, colors: 64 },
+  desktop: { format: INITIAL_FORMAT, quality: 82, autoQuality: true, width, height, palette: false, colors: 64 },
+  mobile: { format: INITIAL_FORMAT, quality: 82, autoQuality: true, width, height, palette: false, colors: 64 },
 });
 const settingsKey = (id: string, viewport: Viewport) => `${id}:${viewport}`;
 const byteLabel = (bytes: number) => bytes < 1024 * 1024 ? `${(bytes / 1024).toFixed(1)} KB` : `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
@@ -45,10 +49,10 @@ function outputPath(image: ImageDetails, viewport: Viewport, format: Format) {
   return `${dir}${base}-${viewport}${OUTPUT_EXTENSION[format]}`;
 }
 
-async function renderRequest(endpoint: 'preview' | 'export', image: ImageDetails, viewport: Viewport, settings: Settings) {
+async function renderRequest(endpoint: 'preview' | 'export', image: ImageDetails, viewport: Viewport, settings: Settings, targetSsim: number) {
   const params = new URLSearchParams({
     name: image.relativePath, viewport, format: settings.format, quality: String(settings.quality),
-    width: String(settings.width), height: String(settings.height),
+    width: String(settings.width), height: String(settings.height), targetSsim: String(targetSsim), autoQuality: String(settings.autoQuality),
     palette: String(settings.palette), colors: String(settings.colors),
   });
   const response = await fetch(`/api/${endpoint}?${params}`, {
@@ -62,13 +66,17 @@ async function renderRequest(endpoint: 'preview' | 'export', image: ImageDetails
   return response;
 }
 
-function VariantPanel({ image, viewport, settings, selected, onSettings, onSelect }: {
+function VariantPanel({ image, viewport, settings, targetSsim, selected, onSettings, onSelect, onMeasuredSsim, onTargetSsimChange }: {
   image: ImageDetails; viewport: Viewport; settings: Settings; selected: boolean;
-  onSettings: (settings: Settings) => void; onSelect: (selected: boolean) => void;
+  targetSsim: number;
+  onSettings: (settings: Settings) => void; onSelect: (selected: boolean) => void; onMeasuredSsim: (id: string, viewport: Viewport, ssim: number) => void; onTargetSsimChange: (id: string, viewport: Viewport, ssim: number) => void;
 }) {
   const [previewUrl, setPreviewUrl] = useState('');
   const [showingOriginal, setShowingOriginal] = useState(false);
   const [previewSize, setPreviewSize] = useState<number | null>(null);
+  const [actualSsim, setActualSsim] = useState<number | null>(null);
+  const [actualQuality, setActualQuality] = useState<number | null>(null);
+  const [targetMet, setTargetMet] = useState(true);
   const [loading, setLoading] = useState(false);
   const [downloading, setDownloading] = useState(false);
   const [error, setError] = useState('');
@@ -78,20 +86,27 @@ function VariantPanel({ image, viewport, settings, selected, onSettings, onSelec
     setShowingOriginal(false);
     const timer = window.setTimeout(async () => {
       setLoading(true); setError('');
+      setActualQuality(null);
       try {
-        const response = await renderRequest('preview', image, viewport, settings);
+        const response = await renderRequest('preview', image, viewport, settings, targetSsim);
         const blob = await response.blob();
         const nextUrl = URL.createObjectURL(blob);
         if (active) {
           setPreviewUrl((previous) => { if (previous) URL.revokeObjectURL(previous); return nextUrl; });
           setPreviewSize(blob.size);
+          const measuredSsim = readNumericHeader(response.headers, 'x-image-ssim');
+          const selectedQuality = readNumericHeader(response.headers, 'x-image-quality');
+          setActualSsim(measuredSsim);
+          setActualQuality(selectedQuality);
+          setTargetMet(response.headers.get('x-image-target-met') !== 'false');
+          if (!settings.autoQuality && measuredSsim !== null) onMeasuredSsim(image.id, viewport, measuredSsim);
         } else URL.revokeObjectURL(nextUrl);
       } catch (cause) {
         if (active) setError(cause instanceof Error ? cause.message : 'Unable to create preview');
       } finally { if (active) setLoading(false); }
     }, 160);
     return () => { active = false; window.clearTimeout(timer); };
-  }, [image, viewport, settings.format, settings.quality, settings.width, settings.height, settings.palette, settings.colors]);
+  }, [image, viewport, settings.format, settings.quality, settings.autoQuality, settings.width, settings.height, settings.palette, settings.colors, settings.autoQuality ? targetSsim : null]);
 
   const setDimension = (key: 'width' | 'height', value: string) => {
     const number = Number(value);
@@ -106,7 +121,7 @@ function VariantPanel({ image, viewport, settings, selected, onSettings, onSelec
   const downloadVariant = async () => {
     setDownloading(true); setError('');
     try {
-      const response = await renderRequest('export', image, viewport, settings);
+      const response = await renderRequest('export', image, viewport, settings, targetSsim);
       const filename = outputPath(image, viewport, settings.format).split('/').pop() || 'image-output';
       download(await response.blob(), filename);
     } catch (cause) { setError(cause instanceof Error ? cause.message : 'Unable to download image'); }
@@ -120,6 +135,7 @@ function VariantPanel({ image, viewport, settings, selected, onSettings, onSelec
     </div>
     <div className="preview checker" style={{ aspectRatio: `${image.width} / ${image.height}` }}>
       {showingOriginal ? <img src={image.originalUrl} alt="Original image comparison" /> : previewUrl ? <img src={previewUrl} alt={`${viewport} compressed preview`} /> : <span>{loading ? 'Rendering preview…' : error || 'Preview'}</span>}
+      {loading && previewUrl && <div className="preview-loading" role="status" aria-live="polite"><span className="preview-spinner" aria-hidden="true" />Updating preview…</div>}
       <div className="preview-actions">
         <button className="compare-toggle" disabled={!previewUrl} onClick={() => setShowingOriginal((value) => !value)}>{showingOriginal ? 'Show compressed' : 'Show original'}</button>
         <button className="open-preview" disabled={!previewUrl} title="Open compressed preview in a new tab" aria-label={`Open ${viewport} preview in a new tab`} onClick={() => window.open(previewUrl, '_blank', 'noopener,noreferrer')}>Open preview ↗</button>
@@ -129,8 +145,10 @@ function VariantPanel({ image, viewport, settings, selected, onSettings, onSelec
       <label>Format<select value={settings.format} onChange={(event) => onSettings({ ...settings, format: event.target.value as Format })}>
         <option value="png">PNG</option><option value="jpeg">JPEG</option><option value="webp">WebP</option>
       </select></label>
-      {settings.format !== 'png' && <label>Quality <b>{settings.quality}</b><input type="range" min="1" max="100" value={settings.quality} onChange={(event) => onSettings({ ...settings, quality: Number(event.target.value) })} /></label>}
       {settings.format === 'png' && <div className="palette-settings"><label className="palette-toggle"><input type="checkbox" checked={settings.palette} onChange={(event) => onSettings({ ...settings, palette: event.target.checked })} /> Reduce palette</label><label className="palette-count">Colors <b>{settings.colors}</b><input type="range" min="2" max="256" value={settings.colors} disabled={!settings.palette} onChange={(event) => onSettings({ ...settings, colors: Number(event.target.value) })} /></label><small className="palette-hint">{settings.palette ? `Preview and export use up to ${settings.colors} colors` : 'Enable Reduce palette to apply the color limit'}</small></div>}
+      <label className="variant-ssim">Target SSIM <b>{targetSsim.toFixed(2)}</b><input type="range" min="0.8" max="1" step="0.01" value={targetSsim} onChange={(event) => { onSettings({ ...settings, autoQuality: true }); onTargetSsimChange(image.id, viewport, Number(event.target.value)); }} /></label>
+      {settings.format !== 'png' && <label>Quality <b>{settings.autoQuality ? actualQuality ?? 'Auto' : settings.quality}</b><input type="range" min="1" max="100" value={settings.autoQuality ? actualQuality ?? 82 : settings.quality} onChange={(event) => onSettings({ ...settings, quality: Number(event.target.value), autoQuality: false })} /><button type="button" className="quality-auto" disabled={settings.autoQuality} onClick={() => onSettings({ ...settings, autoQuality: true })}>Auto</button></label>}
+      <div className="quality-readout">{settings.format === 'png' ? 'Lossless PNG' : ''} Preview SSIM {Number.isFinite(actualSsim) ? actualSsim.toFixed(3) : '…'}{!targetMet ? ' · target not met' : ''}</div>
       <div className="dimension-fields"><label>Width<input type="number" min="1" max="30000" value={settings.width} onChange={(event) => setDimension('width', event.target.value)} /></label><label>Height<input type="number" min="1" max="30000" value={settings.height} onChange={(event) => setDimension('height', event.target.value)} /></label></div>
     </div>
     <div className="size-readout">
@@ -174,7 +192,10 @@ function App() {
   const dragDepth = useRef(0);
   const imagesRef = useRef<ImageDetails[]>([]);
   const [images, setImages] = useState<ImageDetails[]>([]);
+  const [sort, setSort] = useState<{ key: SortKey; direction: SortDirection } | null>(null);
   const [settings, setSettings] = useState<Record<string, Settings>>({});
+  const [targetSsim, setTargetSsim] = useState(INITIAL_SSIM);
+  const [variantSsim, setVariantSsim] = useState<Record<string, number>>({});
   const [selected, setSelected] = useState<Record<string, boolean>>({});
   const [exportMode, setExportMode] = useState<'zip' | 'individual'>('zip');
   const [sources, setSources] = useState<SourceHandle[]>([]);
@@ -193,6 +214,15 @@ function App() {
   }, []);
 
   const selectedCount = useMemo(() => Object.values(selected).filter(Boolean).length, [selected]);
+  const sortedImages = useMemo(() => {
+    if (!sort) return images;
+    return [...images].sort((a, b) => {
+      const comparison = sort.key === 'name'
+        ? a.file.name.localeCompare(b.file.name, undefined, { numeric: true, sensitivity: 'base' }) || a.relativePath.localeCompare(b.relativePath)
+        : a.file.size - b.file.size;
+      return sort.direction === 'asc' ? comparison : -comparison;
+    });
+  }, [images, sort]);
 
   const addCandidates = async (candidates: FileCandidate[], source?: SourceHandle, directory = false) => {
     if (!candidates.length) return;
@@ -306,9 +336,20 @@ function App() {
           const restoredSettings: Record<string, Settings> = {};
           for (const [key, value] of Object.entries(saved.state.settings)) {
             const previous = value as Partial<Settings>;
-            restoredSettings[key] = { format: previous.format || INITIAL_FORMAT, quality: previous.quality ?? 82, width: previous.width ?? 1, height: previous.height ?? 1, palette: previous.palette ?? false, colors: previous.colors ?? 64 };
+            restoredSettings[key] = { format: previous.format || INITIAL_FORMAT, quality: previous.quality ?? 82, autoQuality: previous.autoQuality ?? true, width: previous.width ?? 1, height: previous.height ?? 1, palette: previous.palette ?? false, colors: previous.colors ?? 64 };
           }
           setSettings(restoredSettings);
+          setTargetSsim((saved.state as any).targetSsim ?? INITIAL_SSIM);
+          const storedTargets = (saved.state as any).variantSsim as Record<string, number> | undefined;
+          if (storedTargets) setVariantSsim(storedTargets);
+          else {
+            const legacyTargets = (saved.state as any).imageSsim as Record<string, number> | undefined;
+            const legacyInheritance = (saved.state as any).inheritsPageSsim as Record<string, boolean> | undefined;
+            if (legacyTargets) setVariantSsim(Object.fromEntries(Object.keys(restoredSettings).flatMap((key) => {
+              const id = key.slice(0, key.lastIndexOf(':'));
+              return legacyInheritance?.[id] === false && legacyTargets[id] !== undefined ? [[key, legacyTargets[id]]] : [];
+            })));
+          }
           setSelected(saved.state.selected);
           setExportMode(saved.state.exportMode);
           setRemovedIds(saved.state.removedIds || []);
@@ -327,8 +368,8 @@ function App() {
 
   useEffect(() => {
     if (!ready) return;
-    void saveUiState({ settings, selected, exportMode, removedIds }).catch((cause) => setError(cause instanceof Error ? cause.message : 'Unable to save image settings'));
-  }, [ready, settings, selected, exportMode, removedIds]);
+    void saveUiState({ settings, selected, exportMode, removedIds, targetSsim, variantSsim }).catch((cause) => setError(cause instanceof Error ? cause.message : 'Unable to save image settings'));
+  }, [ready, settings, selected, exportMode, removedIds, targetSsim, variantSsim]);
 
   useEffect(() => {
     if (ready) void saveSources(sources).catch((cause) => setError(cause instanceof Error ? cause.message : 'Unable to save selected file handles'));
@@ -336,6 +377,15 @@ function App() {
 
   const updateSettings = (id: string, viewport: Viewport, value: Settings) => setSettings((old) => ({ ...old, [settingsKey(id, viewport)]: value }));
   const updateSelection = (id: string, viewport: Viewport, value: boolean) => setSelected((old) => ({ ...old, [settingsKey(id, viewport)]: value }));
+  const syncMeasuredSsim = useCallback((id: string, viewport: Viewport, ssim: number) => {
+    const key = settingsKey(id, viewport);
+    const target = targetFromMeasuredSsim(ssim);
+    if (target === null) return;
+    setVariantSsim((old) => old[key] === target ? old : { ...old, [key]: target });
+  }, []);
+  const updateVariantSsim = useCallback((id: string, viewport: Viewport, ssim: number) => {
+    setVariantSsim((old) => ({ ...old, [settingsKey(id, viewport)]: ssim }));
+  }, []);
 
   const exportSelected = async () => {
     const choices = images.flatMap((image) => (['desktop', 'mobile'] as const)
@@ -346,7 +396,7 @@ function App() {
     const outputs: ExportItem[] = [];
     try {
       for (const choice of choices) {
-        const response = await renderRequest('export', choice.image, choice.viewport, choice.settings);
+        const response = await renderRequest('export', choice.image, choice.viewport, choice.settings, variantSsim[settingsKey(choice.image.id, choice.viewport)] ?? targetSsim);
         outputs.push({ path: outputPath(choice.image, choice.viewport, choice.settings.format), data: new Uint8Array(await response.arrayBuffer()) });
       }
       if (exportMode === 'zip') {
@@ -370,12 +420,13 @@ function App() {
     setSources((old) => old.filter((source) => source.handle.kind !== 'file' || !id.startsWith(`${source.id}::`)));
     setSelected((old) => { const next = { ...old }; delete next[settingsKey(id, 'desktop')]; delete next[settingsKey(id, 'mobile')]; return next; });
     setSettings((old) => { const next = { ...old }; delete next[settingsKey(id, 'desktop')]; delete next[settingsKey(id, 'mobile')]; return next; });
+    setVariantSsim((old) => { const next = { ...old }; delete next[settingsKey(id, 'desktop')]; delete next[settingsKey(id, 'mobile')]; return next; });
   };
 
   const clearAll = async () => {
     images.forEach((image) => URL.revokeObjectURL(image.originalUrl));
     imagesRef.current = [];
-    setImages([]); setSettings({}); setSelected({}); setSources([]); setRemovedIds([]); setRestorePending(false); setNotice(''); setError('');
+    setImages([]); setSettings({}); setSelected({}); setVariantSsim({}); setSources([]); setRemovedIds([]); setRestorePending(false); setNotice(''); setError('');
     await clearSession().catch((cause) => setError(cause instanceof Error ? cause.message : 'Unable to clear the saved session'));
   };
 
@@ -411,6 +462,7 @@ function App() {
         <button className="picker-button" onClick={() => void pickDirectory()}><span className="picker-icon">▧</span><span><b>Select a folder</b><small>Includes nested folders</small></span></button>
         <button className="picker-button" onClick={() => void pickFiles()}><span className="picker-icon">＋</span><span><b>Add image files</b><small>Select one or more images</small></span></button>
         {images.length > 0 && <button className="clear-button" onClick={() => void clearAll()}>Clear all</button>}
+        <div className="sort-controls toolbar-sort"><span>Sort by</span><button aria-pressed={sort?.key === 'name'} onClick={() => setSort((current) => current?.key === 'name' ? { key: 'name', direction: current.direction === 'asc' ? 'desc' : 'asc' } : { key: 'name', direction: 'asc' })}>File name{sort?.key === 'name' ? sort.direction === 'asc' ? ' ↑' : ' ↓' : ''}</button><button aria-pressed={sort?.key === 'size'} onClick={() => setSort((current) => current?.key === 'size' ? { key: 'size', direction: current.direction === 'asc' ? 'desc' : 'asc' } : { key: 'size', direction: 'asc' })}>File size{sort?.key === 'size' ? sort.direction === 'asc' ? ' ↑' : ' ↓' : ''}</button></div>
         <input ref={directoryInput} hidden type="file" multiple accept="image/*" onChange={(event) => { void addFiles(event.target.files, true); event.target.value = ''; }} />
         <input ref={filesInput} hidden type="file" multiple accept="image/*" onChange={(event) => { void addFiles(event.target.files, false); event.target.value = ''; }} />
       </div>
@@ -418,14 +470,15 @@ function App() {
       <div className="header-tools"><span className="image-count">{images.length} images · {selectedCount} selected</span><button className="primary" disabled={!selectedCount || exporting} onClick={exportSelected}>{exporting ? 'Preparing…' : 'Export selected'}</button></div>
     </header>
     <section className="intro"><div><p className="eyebrow">Image optimization</p><h1>Choose images to optimize</h1><p>Select a folder, add individual files, or drop images anywhere on this page. Your originals stay on your device.</p></div></section>
+    <section className="target-ssim"><label>Target SSIM <b>{targetSsim.toFixed(2)}</b><input type="range" min="0.8" max="1" step="0.01" value={targetSsim} onChange={(event) => { const value = Number(event.target.value); setTargetSsim(value); setVariantSsim({}); setSettings((old) => Object.fromEntries(Object.entries(old).map(([key, setting]) => [key, { ...setting, autoQuality: true }]))); }} /></label><small>Updates each variant target and automatically selects compression quality.</small></section>
     {!supportsPersistentPickers() && <p className="persistence-note">This browser can’t restore selected files after refresh. Reselect them to continue.</p>}
     {restorePending && <div className="restore-session"><span>Previous images are saved. Allow file access to restore them.</span><button onClick={() => void restoreFiles()} disabled={scanning}>Restore previous session</button></div>}
     {(notice || error) && <div className={`notice ${error ? 'error' : 'success'}`}>{error || notice}<button onClick={() => { setError(''); setNotice(''); }}>Dismiss</button></div>}
     {images.length === 0 ? <div className="empty-state"><div className="empty-icon">▤</div><h2>{scanning ? 'Reading selected images…' : 'Nothing selected yet'}</h2><p>Choose a directory or add individual image files to begin.</p></div> : <div className="image-list"><div className="list-head"><span>Original</span><span>Desktop output</span><span>Mobile output</span></div>
-      {images.map((image, index) => <article className="image-row" key={image.id}>
+      {sortedImages.map((image, index) => <article className="image-row" key={image.id}>
         <div className="image-row-heading"><div className="image-name"><span>{String(index + 1).padStart(2, '0')}</span><div><b title={image.relativePath}>{image.relativePath.split('/').pop()}</b><small title={image.relativePath}>{image.relativePath}</small></div></div><button className="remove-button" title="Remove image" onClick={() => removeImage(image.id)}>Remove</button></div>
         <div className="image-row-content"><div className="source-cell"><div className="source-thumb checker" style={{ aspectRatio: `${image.width} / ${image.height}` }}><img src={image.originalUrl} alt="Original" /></div><div className="source-meta"><small>{image.width} × {image.height}</small><div className="source-file-size"><span>Original file</span><b>{byteLabel(image.file.size)}</b></div></div></div>
-          {(['desktop', 'mobile'] as const).map((viewport) => <VariantPanel key={settingsKey(image.id, viewport)} image={image} viewport={viewport} settings={settings[settingsKey(image.id, viewport)] || defaults(image.width, image.height)[viewport]} selected={!!selected[settingsKey(image.id, viewport)]} onSettings={(value) => updateSettings(image.id, viewport, value)} onSelect={(value) => updateSelection(image.id, viewport, value)} />)}
+          {(['desktop', 'mobile'] as const).map((viewport) => <VariantPanel key={settingsKey(image.id, viewport)} image={image} viewport={viewport} settings={settings[settingsKey(image.id, viewport)] || defaults(image.width, image.height)[viewport]} targetSsim={variantSsim[settingsKey(image.id, viewport)] ?? targetSsim} selected={!!selected[settingsKey(image.id, viewport)]} onSettings={(value) => updateSettings(image.id, viewport, value)} onSelect={(value) => updateSelection(image.id, viewport, value)} onMeasuredSsim={syncMeasuredSsim} onTargetSsimChange={updateVariantSsim} />)}
         </div>
       </article>)}
     </div>}

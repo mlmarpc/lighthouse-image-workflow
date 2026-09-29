@@ -16,6 +16,10 @@ export type SavedUiState = {
   selected: Record<string, boolean>;
   exportMode: 'zip' | 'individual';
   removedIds: string[];
+  targetSsim?: number;
+  variantSsim?: Record<string, number>;
+  imageSsim?: Record<string, number>;
+  inheritsPageSsim?: Record<string, boolean>;
 };
 
 const DATABASE = 'image-review-session';
@@ -92,4 +96,3 @@ function transactionDone(tx: IDBTransaction): Promise<void> {
     tx.onabort = () => reject(tx.error || new Error('Image session storage was interrupted'));
   });
 }
-

@@ -6,6 +6,20 @@ import { startWebServer } from '../server.mjs';
 import { encodeBuffer } from '../../shared/image-processing.mjs';
 import { mergeSelectedFiles } from '../src/selection.mjs';
 import { buildZip } from '../src/export-utils.mjs';
+import { readNumericHeader, targetFromMeasuredSsim } from '../src/ssim-utils.mjs';
+
+test('SSIM controls parse missing metadata safely and round measured targets to slider precision', () => {
+  const headers = new Map([['x-image-quality', ''], ['x-image-ssim', '0.9349'], ['x-invalid', 'oops']]);
+  const view = { get: (name) => headers.get(name) ?? null };
+  assert.equal(readNumericHeader(view, 'x-image-quality'), null);
+  assert.equal(readNumericHeader(view, 'x-missing'), null);
+  assert.equal(readNumericHeader(view, 'x-invalid'), null);
+  assert.equal(readNumericHeader(view, 'x-image-ssim'), 0.9349);
+  assert.equal(targetFromMeasuredSsim(0.9349), 0.93);
+  assert.equal(targetFromMeasuredSsim(0.799), 0.8);
+  assert.equal(targetFromMeasuredSsim(1.02), 1);
+  assert.equal(targetFromMeasuredSsim(Number.NaN), null);
+});
 
 test('directory and standalone file selections merge and deduplicate', () => {
   const makeFile = (name, size, lastModified, webkitRelativePath = '') => ({ name, size, lastModified, webkitRelativePath });
@@ -46,7 +60,7 @@ test('web API previews in memory and returns selected export bytes with a safe f
   t.after(() => new Promise((resolve) => server.close(resolve)));
   const original = await sharp({ create: { width: 24, height: 16, channels: 3, background: '#246b58' } }).png().toBuffer();
   const originalCopy = Buffer.from(original);
-  const params = new URLSearchParams({ name: 'photos/nature/hero.png', viewport: 'mobile', format: 'webp', quality: '73', width: '12', height: '10' });
+  const params = new URLSearchParams({ name: 'photos/nature/hero.png', viewport: 'mobile', format: 'webp', quality: '73', width: '12', height: '10', targetSsim: '0.95', autoQuality: 'false' });
   const preview = await fetch(`${url}/api/preview?${params}`, { method: 'POST', headers: { 'content-type': 'image/png' }, body: original });
   assert.equal(preview.status, 200);
   assert.equal(preview.headers.get('x-image-width'), '12');
@@ -55,12 +69,20 @@ test('web API previews in memory and returns selected export bytes with a safe f
   const previewMeta = await sharp(previewBuffer).metadata();
   assert.equal(previewMeta.format, 'webp');
   assert.deepEqual([previewMeta.width, previewMeta.height], [12, 8]);
+  assert.ok(Number.isFinite(Number(preview.headers.get('x-image-ssim'))));
+  assert.equal(preview.headers.get('x-image-quality'), '73');
   assert.deepEqual(original, originalCopy);
 
   const exported = await fetch(`${url}/api/export?${params}`, { method: 'POST', headers: { 'content-type': 'image/png' }, body: original });
   assert.equal(exported.status, 200);
   assert.match(exported.headers.get('content-disposition'), /hero-mobile\.webp/);
   assert.deepEqual(Buffer.from(await exported.arrayBuffer()), previewBuffer);
+
+  const automaticParams = new URLSearchParams({ ...Object.fromEntries(params), targetSsim: '0.8', autoQuality: 'true' });
+  const automatic = await fetch(`${url}/api/preview?${automaticParams}`, { method: 'POST', headers: { 'content-type': 'image/png' }, body: original });
+  assert.equal(automatic.status, 200);
+  assert.ok(Number(automatic.headers.get('x-image-quality')) >= 1);
+  assert.equal(automatic.headers.get('x-image-target-met'), 'true');
 
   const bad = await fetch(`${url}/api/preview?${new URLSearchParams({ ...Object.fromEntries(params), quality: '0' })}`, { method: 'POST', body: original });
   assert.equal(bad.status, 400);
@@ -70,6 +92,7 @@ test('web API previews in memory and returns selected export bytes with a safe f
   const paletteParams = new URLSearchParams({ name: 'palette.png', viewport: 'desktop', format: 'png', quality: '82', width: '24', height: '16', palette: 'true', colors: '16' });
   const paletteResponse = await fetch(`${url}/api/preview?${paletteParams}`, { method: 'POST', headers: { 'content-type': 'image/png' }, body: original });
   assert.equal(paletteResponse.status, 200);
+  assert.ok(Number.isFinite(Number(paletteResponse.headers.get('x-image-ssim'))));
   assert.equal((await sharp(Buffer.from(await paletteResponse.arrayBuffer())).metadata()).isPalette, true);
   const paletteExport = await fetch(`${url}/api/export?${paletteParams}`, { method: 'POST', headers: { 'content-type': 'image/png' }, body: original });
   assert.equal((await sharp(Buffer.from(await paletteExport.arrayBuffer())).metadata()).isPalette, true);
@@ -132,4 +155,34 @@ test('PNG palette slider enforces its color limit and visibly changes the result
   assert.ok(highCount <= 32, `expected at most 32 colors, received ${highCount}`);
   assert.ok(highCount > lowCount, `expected 32-color setting to retain more colors than 8-color setting (${lowCount}, ${highCount})`);
   assert.notEqual(low.data.length, high.data.length);
+});
+
+test('automatic SSIM quality search chooses the lowest quality that meets each target', async () => {
+  const width = 128;
+  const height = 96;
+  const pixels = Buffer.alloc(width * height * 3);
+  for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) {
+    const offset = (y * width + x) * 3;
+    pixels[offset] = (x * 17 + y * 7) % 256;
+    pixels[offset + 1] = (x * 3 + y * 19) % 256;
+    pixels[offset + 2] = (x * 11 + y * 5) % 256;
+  }
+  const input = await sharp(pixels, { raw: { width, height, channels: 3 } }).png().toBuffer();
+  const render = (targetSsim) => encodeBuffer({ input, dimensions: { width, height }, format: 'jpeg', quality: 82, targetSsim, autoQuality: true, measureSsimResult: true });
+  const lowerTarget = await render(0.8);
+  const middleTarget = await render(0.84);
+  const higherTarget = await render(0.9);
+  assert.ok(lowerTarget.info.quality <= middleTarget.info.quality);
+  assert.ok(middleTarget.info.quality <= higherTarget.info.quality);
+  assert.notDeepEqual(lowerTarget.data, higherTarget.data);
+
+  if (middleTarget.info.targetMet && middleTarget.info.quality > 1) {
+    const previous = await encodeBuffer({ input, dimensions: { width, height }, format: 'jpeg', quality: middleTarget.info.quality - 1, targetSsim: 0.84, autoQuality: false, measureSsimResult: true });
+    assert.ok(middleTarget.info.ssim >= 0.84);
+    assert.ok(previous.info.ssim < 0.84);
+  }
+
+  const unattainable = await render(1);
+  assert.equal(unattainable.info.quality, 100);
+  assert.equal(unattainable.info.targetMet, false);
 });

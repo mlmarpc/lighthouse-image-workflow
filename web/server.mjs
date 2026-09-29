@@ -23,6 +23,9 @@ export async function startWebServer({ port = Number(process.env.PORT) || 4178, 
         const headers = { 'content-type': MIME_TYPES[settings.format], 'content-length': data.length, 'cache-control': 'no-store' };
         headers['x-image-width'] = String(info.width);
         headers['x-image-height'] = String(info.height);
+        if (info.ssim !== undefined) headers['x-image-ssim'] = String(info.ssim);
+        if (info.quality !== undefined) headers['x-image-quality'] = String(info.quality);
+        if (info.targetMet !== undefined) headers['x-image-target-met'] = String(info.targetMet);
         if (url.pathname === '/api/export') {
           const name = outputName(url.searchParams.get('name') || 'image', url.searchParams.get('viewport'), settings.format);
           headers['content-disposition'] = `attachment; filename*=UTF-8''${encodeURIComponent(name)}`;
@@ -51,8 +54,11 @@ function readSettings(params) {
   const viewport = params.get('viewport');
   if (!['desktop', 'mobile'].includes(viewport)) throw new Error('Viewport must be desktop or mobile');
   const settings = {
-    format: params.get('format') || 'png',
+    format: params.get('format') || 'jpeg',
     quality: Number(params.get('quality') || 82),
+    targetSsim: params.has('targetSsim') ? Number(params.get('targetSsim')) : undefined,
+    autoQuality: params.get('autoQuality') !== 'false',
+    measureSsimResult: true,
     dimensions: { width: Number(params.get('width')), height: Number(params.get('height')) },
     palette: params.get('palette') === 'true',
     colors: Number(params.get('colors') || 64),
